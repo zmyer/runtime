@@ -1029,6 +1029,7 @@ func TestStatusPodFailingFetchPodConfig(t *testing.T) {
 
 	path := filepath.Join(configStoragePath, p.ID())
 	os.RemoveAll(path)
+	globalPodList.removePod(p.ID())
 
 	_, err = StatusPod(p.ID())
 	if err == nil {
@@ -1050,6 +1051,7 @@ func TestStatusPodPodFailingFetchPodState(t *testing.T) {
 	assert.True(t, ok)
 
 	os.RemoveAll(pImpl.configPath)
+	globalPodList.removePod(p.ID())
 
 	_, err = StatusPod(p.ID())
 	if err == nil {
@@ -1726,7 +1728,7 @@ func TestEnterContainerFailingContNotStarted(t *testing.T) {
 	cmd := newBasicTestCmd()
 
 	_, c, _, err = EnterContainer(p.ID(), contID, cmd)
-	if c != nil || err == nil {
+	if c == nil || err != nil {
 		t.Fatal()
 	}
 }
@@ -1932,6 +1934,7 @@ func TestStatusContainerFailing(t *testing.T) {
 	assert.True(t, ok)
 
 	os.RemoveAll(pImpl.configPath)
+	globalPodList.removePod(p.ID())
 
 	_, err = StatusContainer(p.ID(), contID)
 	if err == nil {
@@ -1990,9 +1993,9 @@ func TestProcessListContainer(t *testing.T) {
 
 func createNewPodConfig(hType HypervisorType, aType AgentType, aConfig interface{}, netModel NetworkModel) PodConfig {
 	hypervisorConfig := HypervisorConfig{
-		KernelPath:     "/usr/share/clear-containers/vmlinux.container",
-		ImagePath:      "/usr/share/clear-containers/clear-containers.img",
-		HypervisorPath: "/usr/bin/qemu-lite-system-x86_64",
+		KernelPath:     "/usr/share/kata-containers/vmlinux.container",
+		ImagePath:      "/usr/share/kata-containers/kata-containers.img",
+		HypervisorPath: "/usr/bin/qemu-system-x86_64",
 	}
 
 	netConfig := NetworkConfig{

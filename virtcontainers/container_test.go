@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"testing"
 
-	vcAnnotations "github.com/containers/virtcontainers/pkg/annotations"
+	vcAnnotations "github.com/kata-containers/runtime/virtcontainers/pkg/annotations"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -210,6 +210,12 @@ func TestContainerAddDriveDir(t *testing.T) {
 		id:         testPodID,
 		storage:    fs,
 		hypervisor: &mockHypervisor{},
+		agent:      &noopAgent{},
+		config: &PodConfig{
+			HypervisorConfig: HypervisorConfig{
+				DisableBlockDeviceUse: false,
+			},
+		},
 	}
 
 	contID := "100"
@@ -258,7 +264,6 @@ func TestContainerAddDriveDir(t *testing.T) {
 	if container.state.Fstype == "" || !container.state.HotpluggedDrive {
 		t.Fatal()
 	}
-
 }
 
 func TestCheckPodRunningEmptyCmdFailure(t *testing.T) {
@@ -307,7 +312,10 @@ func TestContainerAddResources(t *testing.T) {
 		CPUQuota:  5000,
 		CPUPeriod: 1000,
 	}
-	c.pod = &Pod{hypervisor: &mockHypervisor{}}
+	c.pod = &Pod{
+		hypervisor: &mockHypervisor{},
+		agent:      &noopAgent{},
+	}
 	err = c.addResources()
 	assert.Nil(err)
 }
@@ -335,4 +343,30 @@ func TestContainerRemoveResources(t *testing.T) {
 	c.pod = &Pod{hypervisor: &mockHypervisor{}}
 	err = c.removeResources()
 	assert.Nil(err)
+}
+
+func TestContainerEnterErrorsOnContainerStates(t *testing.T) {
+	assert := assert.New(t)
+	c := &Container{
+		pod: &Pod{
+			state: State{
+				State: StateRunning,
+			},
+		},
+	}
+	cmd := Cmd{}
+
+	// Container state undefined
+	_, err := c.enter(cmd)
+	assert.Error(err)
+
+	// Container paused
+	c.state.State = StatePaused
+	_, err = c.enter(cmd)
+	assert.Error(err)
+
+	// Container stopped
+	c.state.State = StateStopped
+	_, err = c.enter(cmd)
+	assert.Error(err)
 }

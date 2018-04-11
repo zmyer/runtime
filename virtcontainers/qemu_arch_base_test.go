@@ -28,7 +28,7 @@ import (
 
 const (
 	qemuArchBaseMachineType = "pc"
-	qemuArchBaseQemuPath    = "/usr/bin/qemu-lite-system-x86_64"
+	qemuArchBaseQemuPath    = "/usr/bin/qemu-system-x86_64"
 )
 
 var qemuArchBaseQemuPaths = map[string]string{
@@ -470,6 +470,10 @@ func TestQemuArchBaseAppendSCSIController(t *testing.T) {
 		},
 	}
 
-	devices = qemuArchBase.appendSCSIController(devices)
+	devices, ioThread := qemuArchBase.appendSCSIController(devices, false)
 	assert.Equal(expectedOut, devices)
+	assert.Nil(ioThread)
+
+	_, ioThread = qemuArchBase.appendSCSIController(devices, true)
+	assert.NotNil(ioThread)
 }

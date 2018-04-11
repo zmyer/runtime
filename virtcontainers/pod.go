@@ -551,7 +551,16 @@ func createAssets(podConfig *PodConfig) error {
 		return err
 	}
 
-	for _, a := range []*asset{kernel, image} {
+	initrd, err := newAsset(podConfig, initrdAsset)
+	if err != nil {
+		return err
+	}
+
+	if image != nil && initrd != nil {
+		return fmt.Errorf("%s and %s cannot be both set", imageAsset, initrdAsset)
+	}
+
+	for _, a := range []*asset{kernel, image, initrd} {
 		if err := podConfig.HypervisorConfig.addCustomAsset(a); err != nil {
 			return err
 		}
@@ -596,11 +605,6 @@ func createPod(podConfig PodConfig) (*Pod, error) {
 		return nil, err
 	}
 
-	// Passthrough devices
-	if err := p.attachDevices(); err != nil {
-		return nil, err
-	}
-
 	// Set pod state
 	if err := p.setPodState(StateReady); err != nil {
 		return nil, err
@@ -638,23 +642,37 @@ func newPod(podConfig PodConfig) (*Pod, error) {
 		wg:              &sync.WaitGroup{},
 	}
 
-	if err := p.storage.createAllResources(*p); err != nil {
+	if err = globalPodList.addPod(p); err != nil {
 		return nil, err
 	}
 
-	if err := p.hypervisor.init(p); err != nil {
-		p.storage.deletePodResources(p.id, nil)
+	defer func() {
+		if err != nil {
+			p.Logger().WithError(err).WithField("podid", p.id).Error("Create new pod failed")
+			globalPodList.removePod(p.id)
+		}
+	}()
+
+	if err = p.storage.createAllResources(*p); err != nil {
 		return nil, err
 	}
 
-	if err := p.hypervisor.createPod(podConfig); err != nil {
-		p.storage.deletePodResources(p.id, nil)
+	defer func() {
+		if err != nil {
+			p.storage.deletePodResources(p.id, nil)
+		}
+	}()
+
+	if err = p.hypervisor.init(p); err != nil {
+		return nil, err
+	}
+
+	if err = p.hypervisor.createPod(podConfig); err != nil {
 		return nil, err
 	}
 
 	agentConfig := newAgentConfig(podConfig)
-	if err := p.agent.init(p, agentConfig); err != nil {
-		p.storage.deletePodResources(p.id, nil)
+	if err = p.agent.init(p, agentConfig); err != nil {
 		return nil, err
 	}
 
@@ -682,6 +700,11 @@ func (p *Pod) storePod() error {
 func fetchPod(podID string) (pod *Pod, err error) {
 	if podID == "" {
 		return nil, errNeedPodID
+	}
+
+	pod, err = globalPodList.lookupPod(podID)
+	if pod != nil && err == nil {
+		return pod, err
 	}
 
 	fs := filesystem{}
@@ -761,6 +784,8 @@ func (p *Pod) delete() error {
 			return err
 		}
 	}
+
+	globalPodList.removePod(p.id)
 
 	return p.storage.deletePodResources(p.id, nil)
 }
@@ -1069,24 +1094,4 @@ func togglePausePod(podID string, pause bool) (*Pod, error) {
 	}
 
 	return p, nil
-}
-
-func (p *Pod) attachDevices() error {
-	for _, container := range p.containers {
-		if err := container.attachDevices(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (p *Pod) detachDevices() error {
-	for _, container := range p.containers {
-		if err := container.detachDevices(); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

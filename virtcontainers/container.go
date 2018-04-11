@@ -300,7 +300,14 @@ func (c *Container) createContainersDirs() error {
 func (c *Container) mountSharedDirMounts(hostSharedDir, guestSharedDir string) ([]Mount, error) {
 	var sharedDirMounts []Mount
 	for idx, m := range c.mounts {
-		if isSystemMount(m.Destination) || m.Type != "bind" {
+		if m.Type != "bind" {
+			continue
+		}
+
+		// We need to treat /dev/shm as a special case. This is passed as a bind mount in the spec,
+		// but it does not make sense to pass this as a 9p mount from the host side.
+		// This needs to be handled purely in the guest, by allocating memory for this inside the VM.
+		if m.Destination == "/dev/shm" {
 			continue
 		}
 
@@ -416,63 +423,95 @@ func newContainer(pod *Pod, contConfig ContainerConfig) (*Container, error) {
 	return c, nil
 }
 
-// createContainer creates and start a container inside a Pod. It has to be
-// called only when a new container, not known by the pod, has to be created.
-func createContainer(pod *Pod, contConfig ContainerConfig) (*Container, error) {
-	if pod == nil {
-		return nil, errNeedPod
+// rollbackFailingContainerCreation rolls back important steps that might have
+// been performed before the container creation failed.
+// - Unplug CPU and memory resources from the VM.
+// - Unplug devices from the VM.
+func (c *Container) rollbackFailingContainerCreation() {
+	if err := c.removeResources(); err != nil {
+		c.Logger().WithError(err).Error("rollback failed removeResources()")
 	}
-
-	c, err := newContainer(pod, contConfig)
-	if err != nil {
-		return nil, err
+	if err := c.detachDevices(); err != nil {
+		c.Logger().WithError(err).Error("rollback failed detachDevices()")
 	}
-
-	if err := c.createContainersDirs(); err != nil {
-		return nil, err
+	if err := c.removeDrive(); err != nil {
+		c.Logger().WithError(err).Error("rollback failed removeDrive()")
 	}
+}
 
+func (c *Container) checkBlockDeviceSupport() bool {
 	if !c.pod.config.HypervisorConfig.DisableBlockDeviceUse {
 		agentCaps := c.pod.agent.capabilities()
 		hypervisorCaps := c.pod.hypervisor.capabilities()
 
 		if agentCaps.isBlockDeviceSupported() && hypervisorCaps.isBlockDeviceHotplugSupported() {
-			if err := c.hotplugDrive(); err != nil {
-				return nil, err
-			}
+			return true
+		}
+	}
+
+	return false
+}
+
+// createContainer creates and start a container inside a Pod. It has to be
+// called only when a new container, not known by the pod, has to be created.
+func createContainer(pod *Pod, contConfig ContainerConfig) (c *Container, err error) {
+	if pod == nil {
+		return nil, errNeedPod
+	}
+
+	c, err = newContainer(pod, contConfig)
+	if err != nil {
+		return
+	}
+
+	if err = c.createContainersDirs(); err != nil {
+		return
+	}
+
+	// In case the container creation fails, the following takes care
+	// of rolling back all the actions previously performed.
+	defer func() {
+		if err != nil {
+			c.rollbackFailingContainerCreation()
+		}
+	}()
+
+	if c.checkBlockDeviceSupport() {
+		if err = c.hotplugDrive(); err != nil {
+			return
 		}
 	}
 
 	// Attach devices
-	if err := c.attachDevices(); err != nil {
-		return nil, err
+	if err = c.attachDevices(); err != nil {
+		return
 	}
 
-	if err := c.addResources(); err != nil {
-		return nil, err
+	if err = c.addResources(); err != nil {
+		return
 	}
 
 	// Deduce additional system mount info that should be handled by the agent
 	// inside the VM
 	c.getSystemMountInfo()
 
-	if err := c.storeDevices(); err != nil {
-		return nil, err
+	if err = c.storeDevices(); err != nil {
+		return
 	}
 
 	process, err := pod.agent.createContainer(c.pod, c)
 	if err != nil {
-		return nil, err
+		return c, err
 	}
 	c.process = *process
 
 	// Store the container process returned by the agent.
-	if err := c.storeProcess(); err != nil {
-		return nil, err
+	if err = c.storeProcess(); err != nil {
+		return
 	}
 
-	if err := c.setContainerState(StateReady); err != nil {
-		return nil, err
+	if err = c.setContainerState(StateReady); err != nil {
+		return
 	}
 
 	return c, nil
@@ -627,8 +666,10 @@ func (c *Container) enter(cmd Cmd) (*Process, error) {
 		return nil, err
 	}
 
-	if c.state.State != StateRunning {
-		return nil, fmt.Errorf("Container not running, impossible to enter")
+	if c.state.State != StateReady &&
+		c.state.State != StateRunning {
+		return nil, fmt.Errorf("Container not ready or running, " +
+			"impossible to enter")
 	}
 
 	process, err := c.pod.agent.exec(c.pod, *c, cmd)

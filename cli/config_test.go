@@ -41,7 +41,7 @@ type testRuntimeConfig struct {
 	LogPath           string
 }
 
-func makeRuntimeConfigFileData(hypervisor, hypervisorPath, kernelPath, imagePath, kernelParams, machineType, shimPath, proxyPath, logPath string, disableBlock bool, blockDeviceDriver string) string {
+func makeRuntimeConfigFileData(hypervisor, hypervisorPath, kernelPath, imagePath, kernelParams, machineType, shimPath, proxyPath, logPath string, disableBlock bool, blockDeviceDriver string, enableIOThreads bool) string {
 	return `
 	# Runtime configuration file
 
@@ -55,6 +55,7 @@ func makeRuntimeConfigFileData(hypervisor, hypervisorPath, kernelPath, imagePath
 	default_vcpus = ` + strconv.FormatUint(uint64(defaultVCPUCount), 10) + `
 	default_memory = ` + strconv.FormatUint(uint64(defaultMemSize), 10) + `
 	disable_block_device_use =  ` + strconv.FormatBool(disableBlock) + `
+	enable_iothreads =  ` + strconv.FormatBool(enableIOThreads) + `
 
 	[proxy.kata]
 	path = "` + proxyPath + `"
@@ -101,8 +102,9 @@ func createAllRuntimeConfigFiles(dir, hypervisor string) (config testRuntimeConf
 	machineType := "machineType"
 	disableBlockDevice := true
 	blockDeviceDriver := "virtio-scsi"
+	enableIOThreads := true
 
-	runtimeConfigFileData := makeRuntimeConfigFileData(hypervisor, hypervisorPath, kernelPath, imagePath, kernelParams, machineType, shimPath, proxyPath, logPath, disableBlockDevice, blockDeviceDriver)
+	runtimeConfigFileData := makeRuntimeConfigFileData(hypervisor, hypervisorPath, kernelPath, imagePath, kernelParams, machineType, shimPath, proxyPath, logPath, disableBlockDevice, blockDeviceDriver, enableIOThreads)
 
 	configPath := path.Join(dir, "runtime.toml")
 	err = createConfig(configPath, runtimeConfigFileData)
@@ -140,6 +142,7 @@ func createAllRuntimeConfigFiles(dir, hypervisor string) (config testRuntimeConf
 		BlockDeviceDriver:     defaultBlockDeviceDriver,
 		DefaultBridges:        defaultBridgesCount,
 		Mlock:                 !defaultEnableSwap,
+		EnableIOThreads:       enableIOThreads,
 	}
 
 	agentConfig := vc.KataAgentConfig{}
@@ -514,6 +517,7 @@ func TestMinimalRuntimeConfig(t *testing.T) {
 		HypervisorPath:        defaultHypervisorPath,
 		KernelPath:            defaultKernelPath,
 		ImagePath:             defaultImagePath,
+		InitrdPath:            defaultInitrdPath,
 		HypervisorMachineType: defaultMachineType,
 		DefaultVCPUs:          defaultVCPUCount,
 		DefaultMemSz:          defaultMemSize,
@@ -568,6 +572,7 @@ func TestNewQemuHypervisorConfig(t *testing.T) {
 	imagePath := path.Join(dir, "image")
 	machineType := "machineType"
 	disableBlock := true
+	enableIOThreads := true
 
 	hypervisor := hypervisor{
 		Path:                  hypervisorPath,
@@ -575,6 +580,7 @@ func TestNewQemuHypervisorConfig(t *testing.T) {
 		Image:                 imagePath,
 		MachineType:           machineType,
 		DisableBlockDeviceUse: disableBlock,
+		EnableIOThreads:       enableIOThreads,
 	}
 
 	files := []string{hypervisorPath, kernelPath, imagePath}
@@ -614,6 +620,10 @@ func TestNewQemuHypervisorConfig(t *testing.T) {
 
 	if config.DisableBlockDeviceUse != disableBlock {
 		t.Errorf("Expected value for disable block usage %v, got %v", disableBlock, config.DisableBlockDeviceUse)
+	}
+
+	if config.EnableIOThreads != enableIOThreads {
+		t.Errorf("Expected value for enable IOThreads  %v, got %v", enableIOThreads, config.EnableIOThreads)
 	}
 
 }
@@ -757,6 +767,44 @@ func TestHypervisorDefaultsKernel(t *testing.T) {
 	assert.Equal(h.kernelParams(), kernelParams, "custom hypervisor kernel parameterms wrong")
 }
 
+// The default initrd path is not returned by h.initrd()
+func TestHypervisorDefaultsInitrd(t *testing.T) {
+	assert := assert.New(t)
+
+	tmpdir, err := ioutil.TempDir(testDir, "")
+	assert.NoError(err)
+	defer os.RemoveAll(tmpdir)
+
+	testInitrdPath := filepath.Join(tmpdir, "initrd")
+	testInitrdLinkPath := filepath.Join(tmpdir, "initrd-link")
+
+	err = createEmptyFile(testInitrdPath)
+	assert.NoError(err)
+
+	err = syscall.Symlink(testInitrdPath, testInitrdLinkPath)
+	assert.NoError(err)
+
+	savedInitrdPath := defaultInitrdPath
+
+	defer func() {
+		defaultInitrdPath = savedInitrdPath
+	}()
+
+	defaultInitrdPath = testInitrdPath
+	h := hypervisor{}
+	p, err := h.initrd()
+	assert.NoError(err)
+	assert.Equal(p, "", "default Image path wrong")
+
+	// test path resolution
+	defaultInitrdPath = testInitrdLinkPath
+	h = hypervisor{}
+	p, err = h.initrd()
+	assert.NoError(err)
+	assert.Equal(p, "")
+}
+
+// The default image path is not returned by h.image()
 func TestHypervisorDefaultsImage(t *testing.T) {
 	assert := assert.New(t)
 
@@ -783,14 +831,14 @@ func TestHypervisorDefaultsImage(t *testing.T) {
 	h := hypervisor{}
 	p, err := h.image()
 	assert.NoError(err)
-	assert.Equal(p, defaultImagePath, "default Image path wrong")
+	assert.Equal(p, "", "default Image path wrong")
 
 	// test path resolution
 	defaultImagePath = testImageLinkPath
 	h = hypervisor{}
 	p, err = h.image()
 	assert.NoError(err)
-	assert.Equal(p, testImagePath)
+	assert.Equal(p, "")
 }
 
 func TestProxyDefaults(t *testing.T) {

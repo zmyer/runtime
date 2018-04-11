@@ -30,6 +30,7 @@ import (
 const testPodID = "7f49d00d-1995-4156-8c79-5f5ab24ce138"
 const testContainerID = "containerID"
 const testKernel = "kernel"
+const testInitrd = "initrd"
 const testImage = "image"
 const testHypervisor = "hypervisor"
 const testBundle = "bundle"
@@ -45,6 +46,7 @@ var podDirLock = ""
 var podFileState = ""
 var podFileLock = ""
 var testQemuKernelPath = ""
+var testQemuInitrdPath = ""
 var testQemuImagePath = ""
 var testQemuPath = ""
 var testHyperstartCtlSocket = ""
@@ -53,6 +55,7 @@ var testHyperstartTtySocket = ""
 // cleanUp Removes any stale pod/container state that can affect
 // the next test to run.
 func cleanUp() {
+	globalPodList.removePod(testPodID)
 	for _, dir := range []string{testDir, defaultSharedDir} {
 		os.RemoveAll(dir)
 		os.MkdirAll(dir, dirMode)
@@ -135,6 +138,7 @@ func TestMain(m *testing.M) {
 	podFileLock = filepath.Join(runStoragePath, testPodID, lockFileName)
 
 	testQemuKernelPath = filepath.Join(testDir, testKernel)
+	testQemuInitrdPath = filepath.Join(testDir, testInitrd)
 	testQemuImagePath = filepath.Join(testDir, testImage)
 	testQemuPath = filepath.Join(testDir, testHypervisor)
 
